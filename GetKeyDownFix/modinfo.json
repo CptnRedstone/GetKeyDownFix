@@ -3,7 +3,7 @@
     "name": "GetKeyDown Fix",
     "version": "1.0.0",
     "authors": "Captain Redstone",
-    "description": "Fixes Rain World increasingly failing to register certain inputs as framerate increases, caused by GetKeyDown() and similar functions expecting frame-based context, yet only ever being used in tick-based context.",
+    "description": "Fixes Rain World very frequently ignoring or duplicating certain inputs based on the current framerate, caused by GetKeyDown() and similar functions expecting frame-based context, yet being used almost exclusively in tick-based context."
     "tags": [ "Accessibility" ],
     "checksum_override_version": true
 }

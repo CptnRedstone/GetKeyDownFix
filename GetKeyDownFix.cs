@@ -1,16 +1,12 @@
 ﻿using BepInEx;
 using MonoMod.Cil;
 using MonoMod.RuntimeDetour;
-using Rewired;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection;
 using System.Security;
 using System.Security.Permissions;
 using UnityEngine;
-using static Rewired.PlayerController;
-using static System.Runtime.CompilerServices.RuntimeHelpers;
 
 #pragma warning disable CS0618
 
@@ -20,6 +16,14 @@ using static System.Runtime.CompilerServices.RuntimeHelpers;
 namespace GetKeyDownFix;
 
 [BepInPlugin("CaptainRedstone.GetKeyDownFix", "GetKeyDownFix", "1.0.0")]
+/*
+TODO
+- Icon
+- Log unexpected downs
+- Proper keyupdown tuple
+- Remember to remove this todo
+*/
+
 /*
     Hello code reviewer! TLDR on what this fixes and how it works...
     UnityEngine's GetKeyDown(), GetKeyUp(), GetAxis(), and probably some other stuff are all designed to run per-frame. For instance, GetKeyDown() returns true if the previous frame's key was up, and the current down.
@@ -34,7 +38,6 @@ public partial class GetKeyDownFix : BaseUnityPlugin
 {
     public string HelloDataminerHeresMySourceCode = "https://github.com/CptnRedstone/GetKeyDownFix";
     public static GetKeyDownFix modInstance;
-    public GetKeyDownFix() { }
     public static void LogDebug  (object data) { modInstance.Logger.LogDebug  (data); }
     public static void LogInfo   (object data) { modInstance.Logger.LogInfo   (data); }
     public static void LogMessage(object data) { modInstance.Logger.LogMessage(data); }
@@ -53,7 +56,7 @@ public partial class GetKeyDownFix : BaseUnityPlugin
     public delegate bool orig_GetKeyUp_KeyCode  (KeyCode key);
     public delegate bool orig_GetKeyUp_string   (string name);
     public static Func<string, float> orig_GetAxis;
-    private void On_RainWorld_OnModsInit(On.RainWorld.orig_OnModsInit orig, RainWorld self)
+    public void On_RainWorld_OnModsInit(On.RainWorld.orig_OnModsInit orig, RainWorld self)
     {
         orig(self);
         if (IsInit) return;
@@ -61,8 +64,9 @@ public partial class GetKeyDownFix : BaseUnityPlugin
 
         try
         {
-            On.ProcessManager.Update     += On_ProcessManager_Update;
-            IL.MainLoopProcess.RawUpdate += IL_MainLoopProcess_RawUpdate;
+            On.ProcessManager.Update      += On_ProcessManager_Update;
+            //On.RainWorld.RunRewiredUpdate += On_RainWorld_RunRewiredUpdate;
+            IL.MainLoopProcess.RawUpdate  += IL_MainLoopProcess_RawUpdate;
         }
         catch (Exception ex) { LogFatal(ex); }
         try
@@ -76,50 +80,83 @@ public partial class GetKeyDownFix : BaseUnityPlugin
         {
             new Hook(
                 typeof(Input).GetMethod("GetKeyDown", [typeof(KeyCode)]),
-                new Func<orig_GetKeyDown_KeyCode, KeyCode, bool>(GetKeyDown_KeyCode_Hook)
-            );
+                new Func<orig_GetKeyDown_KeyCode, KeyCode, bool>(GetKeyDown_KeyCode_Hook));
             new Hook(
                 typeof(Input).GetMethod("GetKeyDown", [typeof(string)]),
-                new Func<orig_GetKeyDown_string, string, bool>(GetKeyDown_string_Hook)
-            );
+                new Func<orig_GetKeyDown_string, string, bool>(GetKeyDown_string_Hook));
             new Hook(
                 typeof(Input).GetMethod("GetKeyUp", [typeof(KeyCode)]),
-                new Func<orig_GetKeyUp_KeyCode, KeyCode, bool>(GetKeyUp_KeyCode_Hook)
-            );
+                new Func<orig_GetKeyUp_KeyCode, KeyCode, bool>(GetKeyUp_KeyCode_Hook));
             new Hook(
                 typeof(Input).GetMethod("GetKeyUp", [typeof(string)]),
-                new Func<orig_GetKeyUp_string, string, bool>(GetKeyUp_string_Hook)
-            );
+                new Func<orig_GetKeyUp_string, string, bool>(GetKeyUp_string_Hook));
         }
         catch (Exception ex) { LogFatal(ex); }
     }
-    private static bool isWithinTick = false; //Self explainatory.
-    private static bool tickOccured = false; //Used to determine when to flush the input buffer.
-    private static bool isFirstTick = true; //Used to prevent lag (2 ticks 1 frame) from duplicating inputs.
-    public static Dictionary<KeyCode, bool>  keyDownBufferKeyCode = [];
-    public static Dictionary<string,  bool>  keyDownBufferString  = [];
-    public static Dictionary<KeyCode, bool>  keyUpBufferKeyCode   = []; //I could store the ups and downs together but this is a bit more straightforward, and, only other mods will ever have up calls.
-    public static Dictionary<string,  bool>  keyUpBufferString    = [];
-    public static Dictionary<string,  float> axisBuffer           = [];
-    private void On_ProcessManager_Update(On.ProcessManager.orig_Update orig, ProcessManager self, float deltaTime)
+    public static bool isWithinTick = false; //Self explainatory.
+    public static bool tickOccured = false; //Used to determine when to flush the input buffer.
+    public static bool isFirstTick = true; //Used to prevent lag (2 ticks 1 frame) from duplicating inputs.
+    public static Dictionary<KeyCode, (bool, bool)>  keyDownBufferKeyCode = []; //These bools represent (WasKeyPressDetectedThisTick, lastGetKey). Please forgive my sin, this is a hasty retrofit.
+    public static Dictionary<string,  (bool, bool)>  keyDownBufferString  = [];
+    public static Dictionary<KeyCode, (bool, bool)>  keyUpBufferKeyCode   = []; //I could store the ups and downs together but this is a bit more straightforward, and, only other mods will ever have up calls, which I want to log.
+    public static Dictionary<string,  (bool, bool)>  keyUpBufferString    = [];
+    public static Dictionary<string,  float>         axisBuffer           = [];
+
+    public void WriteToInputBuffers()
     {
-        foreach (KeyCode keyCode  in keyDownBufferKeyCode.Keys.ToList()) { keyDownBufferKeyCode[keyCode] |= Input.GetKey(keyCode);  }
-        foreach (string  keyCode  in keyDownBufferString .Keys.ToList()) { keyDownBufferString [keyCode] |= Input.GetKey(keyCode);  }
-        foreach (KeyCode keyCode  in keyUpBufferKeyCode  .Keys.ToList()) { keyUpBufferKeyCode  [keyCode] |= Input.GetKey(keyCode);  }
-        foreach (string  keyCode  in keyUpBufferString   .Keys.ToList()) { keyUpBufferString   [keyCode] |= Input.GetKey(keyCode);  }
-        foreach (string  axisName in axisBuffer          .Keys.ToList()) { axisBuffer         [axisName] += orig_GetAxis(axisName); }
-        orig(self, deltaTime);
+        foreach (KeyCode keyCode in keyDownBufferKeyCode.Keys.ToList())
+        {
+            keyDownBufferKeyCode[keyCode] =
+                (keyDownBufferKeyCode[keyCode].Item1 || (!keyDownBufferKeyCode[keyCode].Item2 && Input.GetKey(keyCode)),
+                Input.GetKey(keyCode));
+        }
+        foreach (string name in keyDownBufferString.Keys.ToList())
+        {
+            keyDownBufferString[name] =
+                (keyDownBufferString[name].Item1 || (!keyDownBufferString[name].Item2 && Input.GetKey(name)),
+                Input.GetKey(name));
+        }
+        foreach (KeyCode keyCode in keyUpBufferKeyCode.Keys.ToList())
+        {
+            keyUpBufferKeyCode[keyCode] =
+                (keyUpBufferKeyCode[keyCode].Item1 || (!keyUpBufferKeyCode[keyCode].Item2 && Input.GetKey(keyCode)),
+                Input.GetKey(keyCode));
+        }
+        foreach (string name in keyUpBufferString.Keys.ToList())
+        {
+            keyUpBufferString[name] =
+                (keyUpBufferString[name].Item1 || (!keyUpBufferString[name].Item2 && Input.GetKey(name)),
+                Input.GetKey(name));
+        }
+        foreach (string axisName in axisBuffer.Keys.ToList()) { axisBuffer[axisName] += orig_GetAxis(axisName); }
+    }
+    public void MaybeClearInputBuffers()
+    {
         if (tickOccured)
         {
             tickOccured = false;
-            foreach (KeyCode keyCode  in keyDownBufferKeyCode.Keys.ToList()) { keyDownBufferKeyCode[keyCode] = false; }
-            foreach (string  keyCode  in keyDownBufferString .Keys.ToList()) { keyDownBufferString [keyCode] = false; }
-            foreach (KeyCode keyCode  in keyUpBufferKeyCode  .Keys.ToList()) { keyUpBufferKeyCode  [keyCode] = false; }
-            foreach (string  keyCode  in keyUpBufferString   .Keys.ToList()) { keyUpBufferString   [keyCode] = false; }
-            foreach (string  axisName in axisBuffer          .Keys.ToList()) { axisBuffer         [axisName] = 0f;    }
+            foreach (KeyCode keyCode in keyDownBufferKeyCode.Keys.ToList()) { keyDownBufferKeyCode[keyCode] = (false, keyDownBufferKeyCode[keyCode].Item2); }
+            foreach (string keyCode in keyDownBufferString.Keys.ToList()) { keyDownBufferString[keyCode] = (false, keyDownBufferString[keyCode].Item2); }
+            foreach (KeyCode keyCode in keyUpBufferKeyCode.Keys.ToList()) { keyUpBufferKeyCode[keyCode] = (false, keyUpBufferKeyCode[keyCode].Item2); }
+            foreach (string keyCode in keyUpBufferString.Keys.ToList()) { keyUpBufferString[keyCode] = (false, keyUpBufferString[keyCode].Item2); }
+            foreach (string axisName in axisBuffer.Keys.ToList()) { axisBuffer[axisName] = 0f; }
         }
     }
-    private void IL_MainLoopProcess_RawUpdate(ILContext il) //Aka the "where the heck even are we" hook.
+    public void On_ProcessManager_Update(On.ProcessManager.orig_Update orig, ProcessManager self, float deltaTime)
+    {
+        WriteToInputBuffers();
+        orig(self, deltaTime);
+        MaybeClearInputBuffers();
+    }
+    public void On_RainWorld_RunRewiredUpdate(On.RainWorld.orig_RunRewiredUpdate orig, RainWorld self)
+    {
+        Logger.LogDebug("OLD: " + Input.GetKey("5"));
+        orig(self); //I swear this function doesn't do anything? I thought it's there to pull tick-based inputs even without frames but it certainly doesn't seem to... Hook is unused, at least for now.
+        Logger.LogDebug("NEW: " + Input.GetKey("5"));
+        MaybeClearInputBuffers();
+        WriteToInputBuffers();
+    }
+    public void IL_MainLoopProcess_RawUpdate(ILContext il) //Aka the "where the heck even are we" hook.
     {
         try
         {
@@ -149,7 +186,7 @@ public partial class GetKeyDownFix : BaseUnityPlugin
         catch (Exception ex) { LogFatal(ex); }
     }
     //I'm sure there's some fancy way to compact this with a function but eh this works even if it's not the prettiest.
-    private bool GetKeyDown_KeyCode_Hook(orig_GetKeyDown_KeyCode orig, KeyCode key)
+    public bool GetKeyDown_KeyCode_Hook(orig_GetKeyDown_KeyCode orig, KeyCode key)
     {
         if (!isWithinTick) { return orig(key); }
         else if (!isFirstTick) { return false; }
@@ -158,13 +195,13 @@ public partial class GetKeyDownFix : BaseUnityPlugin
             if (!keyDownBufferKeyCode.ContainsKey(key))
             {
                 LogDebug("Detected new bugged KeyDown: " + key);
-                keyDownBufferKeyCode.Add(key, false);
+                keyDownBufferKeyCode.Add(key, (false, false));
             }
-            keyDownBufferKeyCode.TryGetValue(key, out bool keyValue);
-            return keyValue;
+            keyDownBufferKeyCode.TryGetValue(key, out (bool, bool) keyValue);
+            return keyValue.Item1;
         }
     }
-    private bool GetKeyDown_string_Hook(orig_GetKeyDown_string orig, string name)
+    public bool GetKeyDown_string_Hook(orig_GetKeyDown_string orig, string name)
     {
         if (!isWithinTick) { return orig(name); }
         else if (!isFirstTick) { return false; }
@@ -173,13 +210,13 @@ public partial class GetKeyDownFix : BaseUnityPlugin
             if (!keyDownBufferString.ContainsKey(name))
             {
                 LogDebug("Detected new bugged KeyDown: \"" + name + "\"");
-                keyDownBufferString.Add(name, false);
+                keyDownBufferString.Add(name, (false, false));
             }
-            keyDownBufferString.TryGetValue(name, out bool keyValue);
-            return keyValue;
+            keyDownBufferString.TryGetValue(name, out (bool, bool) keyValue);
+            return keyValue.Item1;
         }
     }
-    private bool GetKeyUp_KeyCode_Hook(orig_GetKeyUp_KeyCode orig, KeyCode key)
+    public bool GetKeyUp_KeyCode_Hook(orig_GetKeyUp_KeyCode orig, KeyCode key)
     {
         if (!isWithinTick) { return orig(key); }
         else if (!isFirstTick) { return false; }
@@ -187,14 +224,14 @@ public partial class GetKeyDownFix : BaseUnityPlugin
         {
             if (!keyUpBufferKeyCode.ContainsKey(key))
             {
-                LogWarning("Detected new bugged KeyUp: " + key + " - This IS an external mod bug, please isolate the mod and tell the author to use GetKey() instead.");
-                keyUpBufferKeyCode.Add(key, false);
+                LogWarning("Detected new bugged KeyUp: " + key + " - This never occurs in vanilla and IS an external mod bug, please isolate the mod and tell the author to use GetKey() and a !lastTick instead.");
+                keyUpBufferKeyCode.Add(key, (false, false));
             }
-            keyUpBufferKeyCode.TryGetValue(key, out bool keyValue);
-            return keyValue;
+            keyUpBufferKeyCode.TryGetValue(key, out (bool, bool) keyValue);
+            return keyValue.Item1;
         }
     }
-    private bool GetKeyUp_string_Hook(orig_GetKeyUp_string orig, string name)
+    public bool GetKeyUp_string_Hook(orig_GetKeyUp_string orig, string name)
     {
         if (!isWithinTick) { return orig(name); }
         else if (!isFirstTick) { return false; }
@@ -202,14 +239,14 @@ public partial class GetKeyDownFix : BaseUnityPlugin
         {
             if (!keyUpBufferString.ContainsKey(name))
             {
-                LogWarning("Detected new bugged KeyUp: \"" + name + " - This IS an external mod bug, please isolate the mod and tell the author to use GetKey() instead.");
-                keyUpBufferString.Add(name, false);
+                LogWarning("Detected new bugged KeyUp: \"" + name + " - This never occurs in vanilla and IS an external mod bug, please isolate the mod and tell the author to use GetKey() and a !lastTick instead.");
+                keyUpBufferString.Add(name, (false, false));
             }
-            keyUpBufferString.TryGetValue(name, out bool keyValue);
-            return keyValue;
+            keyUpBufferString.TryGetValue(name, out (bool, bool) keyValue);
+            return keyValue.Item1;
         }
     }
-    static float GetAxis_Hook(string axisName)
+    public static float GetAxis_Hook(string axisName)
     {
         if (!isWithinTick) { return orig_GetAxis(axisName); }
         else if (!isFirstTick) { return 0f; }
