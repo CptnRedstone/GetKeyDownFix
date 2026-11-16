@@ -77,7 +77,7 @@ public class GetKeyDownFix : BaseUnityPlugin
         try
         {
             On.ProcessManager.Update      += On_ProcessManager_Update;
-            //On.RainWorld.RunRewiredUpdate += On_RainWorld_RunRewiredUpdate;
+          //On.RainWorld.RunRewiredUpdate += On_RainWorld_RunRewiredUpdate;
             IL.MainLoopProcess.RawUpdate  += IL_MainLoopProcess_RawUpdate;
         }
         catch (Exception ex) { LogFatal(ex); }
@@ -96,14 +96,15 @@ public class GetKeyDownFix : BaseUnityPlugin
             new Hook(typeof(Input).GetMethod("GetKeyUp",   [typeof(string )]), new Func<orig_GetKeyUp_string   , string , bool>(GetKeyUp_string_Hook   ));
         }
         catch (Exception ex) { LogFatal(ex); }
+        LogInfo("Awake and alert");
     }
     public static bool isWithinTick = false; //Self explainatory.
     public static bool tickOccured = false; //Used to determine when to flush the input buffer.
     public static bool isFirstTick = true; //Used to prevent lag (2 ticks 1 frame) from duplicating inputs.
     public static Dictionary<KeyCode, InputHistory> keyDownBufferKeyCode = [];
     public static Dictionary<string,  InputHistory> keyDownBufferString  = [];
-    public static Dictionary<KeyCode, InputHistory> keyUpBufferKeyCode   = []; //I could store the ups and downs together but this is a bit more straightforward, and makes it easier to detect and log bugged mod inputs.
-    public static Dictionary<string,  InputHistory> keyUpBufferString    = [];
+    public static Dictionary<KeyCode, InputHistory> keyUpBufferKeyCode   = []; //GetKeyUp isn't actually used anywhere in basegame, but pairing it with GetKeyDown seems natural, and could fix modders' mistakes.
+    public static Dictionary<string,  InputHistory> keyUpBufferString    = []; //I could store the ups and downs together, but this is a bit more straightforward, and makes it easier to detect and log bugged mod inputs.
     public static Dictionary<string,  float>        axisBuffer           = [];
 
     public void WriteToInputBuffers()
@@ -111,22 +112,22 @@ public class GetKeyDownFix : BaseUnityPlugin
         foreach (KeyCode keyCode in keyDownBufferKeyCode.Keys.ToList())
         {
             keyDownBufferKeyCode[keyCode].shouldInputFire |= Input.GetKey(keyCode) && !keyDownBufferKeyCode[keyCode].lastInputState;
-            keyDownBufferKeyCode[keyCode].lastInputState = Input.GetKey(keyCode);
+            keyDownBufferKeyCode[keyCode].lastInputState   = Input.GetKey(keyCode);
         }
         foreach (string name in keyDownBufferString.Keys.ToList())
         {
             keyDownBufferString[name].shouldInputFire |= Input.GetKey(name) && !keyDownBufferString[name].lastInputState;
-            keyDownBufferString[name].lastInputState = Input.GetKey(name);
+            keyDownBufferString[name].lastInputState   = Input.GetKey(name);
         }
         foreach (KeyCode keyCode in keyUpBufferKeyCode.Keys.ToList())
         {
             keyUpBufferKeyCode[keyCode].shouldInputFire |= Input.GetKey(keyCode) && !keyUpBufferKeyCode[keyCode].lastInputState;
-            keyUpBufferKeyCode[keyCode].lastInputState = Input.GetKey(keyCode);
+            keyUpBufferKeyCode[keyCode].lastInputState   = Input.GetKey(keyCode);
         }
         foreach (string name in keyUpBufferString.Keys.ToList())
         {
             keyUpBufferString[name].shouldInputFire |= Input.GetKey(name) && !keyUpBufferString[name].lastInputState;
-            keyUpBufferString[name].lastInputState = Input.GetKey(name);
+            keyUpBufferString[name].lastInputState   = Input.GetKey(name);
         }
         foreach (string axisName in axisBuffer.Keys.ToList()) { axisBuffer[axisName] += orig_GetAxis(axisName); }
     }
@@ -150,18 +151,18 @@ public class GetKeyDownFix : BaseUnityPlugin
     }
     public void On_RainWorld_RunRewiredUpdate(On.RainWorld.orig_RunRewiredUpdate orig, RainWorld self)
     {
-        Logger.LogDebug("OLD: " + Input.GetKey("5"));
-        orig(self); //I swear this function doesn't do anything? I thought it's there to pull tick-based inputs even without frames but it certainly doesn't seem to... Hook is unused, at least for now.
-        Logger.LogDebug("NEW: " + Input.GetKey("5"));
+        Logger.LogDebug("OLD: " + Input.GetKey("5")); //I swear this function doesn't do anything? I thought it's there to pull tick-based inputs even without frames but it certainly doesn't seem to...
+        orig(self);                                   //Wonder if RunRewiredUpdate is basically just replacing "last frame's input" with itself rather than actually pausing and rereading inputs.
+        Logger.LogDebug("NEW: " + Input.GetKey("5")); //Wouldn't be the first time that RW code does something that looks like it works, but doesn't, and nobody noticed.
         MaybeClearInputBuffers();
         WriteToInputBuffers();
     }
     public void IL_MainLoopProcess_RawUpdate(ILContext il) //Aka the "where the heck even are we" hook.
-    {
-        try
-        {
-            ILCursor cursor = new(il);
-
+    {                                                      //RW's "ticks" are rather vague; ProcessManager runs sequentially through the main process, then each side process. Each of these processes inherit MainLoopProcess.
+        try                                                //These processes' RawUpdate() is called, which then uses the timestacker to determine how many ticks (Update() calls) to run (often 0), before calling GrafUpdate().
+        {                                                  //This means that any given "tick" is actually a small collection of processes alternating between calling Update() and GrafUpdate(). We want Update() specifically.
+            ILCursor cursor = new(il);                     //To know when a tick is "finished", we need to track when the game has run through Update()s, and check it at the end of ProcessManager before the next frame.
+                                                           //We also need to check if two Updates() are called in a row, as to avoid both ticks individually thinking they're hearing an input for the first time.
             cursor.GotoNext(MoveType.Before, x => x.MatchCallvirt(nameof(MainLoopProcess), nameof(MainLoopProcess.Update)));
             cursor.MoveAfterLabels();
             cursor.EmitDelegate(delegate()
