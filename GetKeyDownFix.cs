@@ -17,12 +17,6 @@ namespace GetKeyDownFix;
 
 [BepInPlugin("CaptainRedstone.GetKeyDownFix", "GetKeyDownFix", "1.0.0")]
 /*
-TODO
-- Icon
-- Remember to remove this todo
-*/
-
-/*
     Hello code reviewer! TLDR on what this fixes and how it works...
     UnityEngine's GetKeyDown(), GetKeyUp(), GetAxis(), and some other similar functions are all designed to run per-frame. For instance, GetKeyDown() returns true if the previous frame's key was up, and the current down.
     The issue is, Rain World's usage of these functions isn't called on frame, it's called on tick. If GetKeyDown() would return true on frame 1, the next tick may only call it after frame 2, where the result is now false.
