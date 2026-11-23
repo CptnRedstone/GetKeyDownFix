@@ -3,6 +3,7 @@ using MonoMod.Cil;
 using MonoMod.RuntimeDetour;
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Linq;
 using System.Security;
 using System.Security.Permissions;
@@ -15,7 +16,8 @@ using UnityEngine;
 
 namespace GetKeyDownFix;
 
-[BepInPlugin("CaptainRedstone.GetKeyDownFix", "GetKeyDownFix", "1.0.0")]
+[Description("Hello Dataminer! Here's my source code: https://github.com/CptnRedstone/GetKeyDownFix")]
+[BepInPlugin("CaptainRedstone.GetKeyDownFix", "GetKeyDownFix", "1.0.1")]
 /*
     Hello code reviewer! TLDR on what this fixes and how it works...
     UnityEngine's GetKeyDown(), GetKeyUp(), GetAxis(), and some other similar functions are all designed to run per-frame. For instance, GetKeyDown() returns true if the previous frame's key was up, and the current down.
@@ -28,7 +30,6 @@ namespace GetKeyDownFix;
 */
 public class GetKeyDownFix : BaseUnityPlugin
 {
-    public string HelloDataminerHeresMySourceCode = "https://github.com/CptnRedstone/GetKeyDownFix";
     public static GetKeyDownFix modInstance;
     public static void LogDebug  (object data) { modInstance.Logger.LogDebug  (data); }
     public static void LogInfo   (object data) { modInstance.Logger.LogInfo   (data); }
@@ -92,6 +93,7 @@ public class GetKeyDownFix : BaseUnityPlugin
         catch (Exception ex) { LogFatal(ex); }
         LogInfo("Awake and alert");
     }
+
     public static bool isWithinTick = false; //Self explainatory.
     public static bool tickOccured = false; //Used to determine when to flush the input buffer.
     public static bool isFirstTick = true; //Used to prevent lag (2 ticks 1 frame) from duplicating inputs.
@@ -139,9 +141,9 @@ public class GetKeyDownFix : BaseUnityPlugin
     }
     public void On_ProcessManager_Update(On.ProcessManager.orig_Update orig, ProcessManager self, float deltaTime)
     {
+        MaybeClearInputBuffers();
         WriteToInputBuffers();
         orig(self, deltaTime);
-        MaybeClearInputBuffers();
     }
     public void On_RainWorld_RunRewiredUpdate(On.RainWorld.orig_RunRewiredUpdate orig, RainWorld self)
     {
